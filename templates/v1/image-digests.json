@@ -1,0 +1,34 @@
+{
+  "version": "v1",
+  "schemaVersion": 1,
+  "comment": "Multi-arch (OCI image index) digests pinned at template release time. Verified on the VM by verify.sh after every docker compose pull.",
+  "images": {
+    "lightninglabs/lightning-terminal:v0.16.1-alpha": {
+      "digest": "sha256:7f8e16d940ee350ff38b2d8e71bda0c512a89822fa62a60097ac7ecc71d660ae",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "source": "https://hub.docker.com/v2/repositories/lightninglabs/lightning-terminal/tags/v0.16.1-alpha",
+      "platforms": [
+        { "os": "linux", "architecture": "amd64", "digest": "sha256:2eda7db063063732b67382e8c9109ec8d1809012c98d0fa116586b7409a8a497" },
+        { "os": "linux", "architecture": "arm64", "digest": "sha256:a11f20d2291a4fa83a9796f0afd6eccb05ff61732f59f8fc2ff776a50a32d596" }
+      ]
+    },
+    "caddy:2-builder": {
+      "digest": "sha256:10ed0251c5cd1dbb4db0b71ad43121147961a51adfec35febce2c93ea25c24f4",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "source": "https://hub.docker.com/v2/repositories/library/caddy/tags/2-builder",
+      "platforms": [
+        { "os": "linux", "architecture": "amd64", "digest": "sha256:a933556c29a031e3c70b54813e8ab1e78223c608ee6a4d28a37712b583a8a357" },
+        { "os": "linux", "architecture": "arm64", "digest": "sha256:a856882573707cbfeff41ee191c699d84c634da091af083e40c6731a195a90bc" }
+      ]
+    },
+    "caddy:2": {
+      "digest": "sha256:25cdc846626b62d05f6b633b9b40c2c9f6ef89b515dc76133cefd920f7dbe562",
+      "mediaType": "application/vnd.oci.image.index.v1+json",
+      "source": "https://hub.docker.com/v2/repositories/library/caddy/tags/2",
+      "platforms": [
+        { "os": "linux", "architecture": "amd64", "digest": "sha256:6d125e80883be8a2bef5f088c7535945b42cdbb8a0f5471bf36eaf18dc0638f1" },
+        { "os": "linux", "architecture": "arm64", "digest": "sha256:df9781ddd351c310248024d964065cd8d41b11fb5d238256d55d30925e8b6ae4" }
+      ]
+    }
+  }
+}

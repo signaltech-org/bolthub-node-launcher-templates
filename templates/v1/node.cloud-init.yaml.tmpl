@@ -1,0 +1,304 @@
+#cloud-config{{SSH_KEY_BLOCK}}
+package_update: true
+
+packages:
+  - ufw
+  - jq
+  - fail2ban
+  - ca-certificates
+  - curl
+  - gnupg{{TOR_PACKAGES}}
+
+runcmd:
+  # Harden SSH
+  - sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+  - sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+  - systemctl restart sshd
+
+  # Fail2ban for SSH brute-force protection
+  - systemctl enable fail2ban
+  - systemctl start fail2ban
+
+  # Firewall: only allow SSH, litd UI/REST, and Lightning P2P
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp
+  - ufw allow 8443/tcp{{UFW_CADDY_PORTS}}
+  - ufw allow 9735/tcp
+  - ufw --force enable
+
+  # Kernel hardening
+  - |
+    cat > /etc/sysctl.d/99-hardening.conf << 'SYSCTL'
+    net.ipv4.conf.all.rp_filter = 1
+    net.ipv4.conf.default.rp_filter = 1
+    net.ipv4.icmp_echo_ignore_broadcasts = 1
+    net.ipv4.conf.all.accept_redirects = 0
+    net.ipv4.conf.default.accept_redirects = 0
+    net.ipv6.conf.all.accept_redirects = 0
+    net.ipv6.conf.default.accept_redirects = 0
+    net.ipv4.conf.all.send_redirects = 0
+    net.ipv4.conf.default.send_redirects = 0
+    SYSCTL
+  - sysctl -p /etc/sysctl.d/99-hardening.conf
+
+  # Automatic security updates
+  - |
+    cat > /etc/apt/apt.conf.d/20auto-upgrades << 'AUTOUPGRADE'
+    APT::Periodic::Update-Package-Lists "1";
+    APT::Periodic::Unattended-Upgrade "1";
+    AUTOUPGRADE
+{{TOR_COMMANDS}}
+  # Install Docker Engine from Docker's official apt repo (provides docker-compose-plugin)
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - |
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+  - DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -y
+  - DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  - systemctl enable docker
+  - systemctl start docker
+  - usermod -aG docker root
+
+  # Provenance: pinned image digests + on-VM verifier
+  - mkdir -p /opt/bolthub
+  - mkdir -p /var/lib/bolthub
+  - |
+    cat > /opt/bolthub/image-digests.json << 'DIGESTS'
+{{IMAGE_DIGESTS_JSON}}
+    DIGESTS
+  - |
+    cat > /opt/bolthub/verify.sh << 'VERIFY'
+{{VERIFY_SCRIPT}}
+    VERIFY
+  - chmod +x /opt/bolthub/verify.sh
+  - echo "{{TEMPLATE_VERSION}}" > /opt/bolthub/template-version
+  - echo "{{TEMPLATE_SHA256}}" > /opt/bolthub/template-sha256{{LITD_PASSWORD_HASH_BLOCK}}
+
+  # Install the bolthub finalize daemon. Source code and release
+  # artifacts live in github.com/signaltech-org/bolthub-node-launcher-templates.
+  # The daemon binary's SHA-256 is included in the cosign-signed
+  # SHA256SUMS for this template version. The daemon listens on
+  # 127.0.0.1:7681 and is reverse-proxied by Caddy at
+  # /.well-known/bolthub/* so the user's browser can drive finalize
+  # directly without BoltHub's server having to SSH into the VM.
+  - |
+    set -e
+    ARCH="$(dpkg --print-architecture)"
+    case "$ARCH" in
+      amd64|arm64) : ;;
+      *) echo "[bolthub] unsupported arch $ARCH for finalize-daemon"; exit 0 ;;
+    esac
+    BINARY="/opt/bolthub/finalize-daemon"
+    URL="{{FINALIZE_DAEMON_URL_BASE}}/bolthub-finalize-daemon-linux-${ARCH}"
+    if curl -fsSL --max-time 60 -o "$BINARY" "$URL"; then
+      chmod +x "$BINARY"
+      EXPECTED=$(jq -r --arg key "bolthub-finalize-daemon-linux-${ARCH}" '.images[$key].digest // empty' /opt/bolthub/image-digests.json | sed 's/^sha256://')
+      if [ -n "$EXPECTED" ]; then
+        ACTUAL=$(sha256sum "$BINARY" | awk '{print $1}')
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+          echo "[bolthub] FATAL: finalize-daemon sha256 mismatch (expected $EXPECTED, got $ACTUAL)" >&2
+          rm -f "$BINARY"
+          exit 1
+        fi
+      fi
+    else
+      echo "[bolthub] WARN: could not download finalize-daemon from $URL; daemon disabled, falling back to API SSH path"
+      rm -f "$BINARY"
+    fi
+  - |
+    if [ -x /opt/bolthub/finalize-daemon ]; then
+      cat > /etc/systemd/system/bolthub-finalize.service << 'UNIT'
+    [Unit]
+    Description=BoltHub one-time-token finalize daemon
+    After=docker.service network-online.target
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    Restart=on-failure
+    RestartSec=5
+    Environment=BOLTHUB_NODE_ID={{NODE_ID_RAW}}
+    Environment=BOLTHUB_WEBHOOK_SECRET={{WEBHOOK_TOKEN_RAW}}
+    Environment=BOLTHUB_CALLBACK_URL={{FINALIZE_CALLBACK_URL}}
+    Environment=BOLTHUB_LISTEN=127.0.0.1:7681
+    Environment=BOLTHUB_CONSUMED_TOKENS_PATH=/var/lib/bolthub/consumed-tokens.log
+    Environment=BOLTHUB_LND_BASE_URL=https://127.0.0.1:8443
+    Environment=BOLTHUB_LND_MACAROON_PATH=/var/lib/docker/volumes/litd_lit-data/_data/admin.macaroon
+    Environment=BOLTHUB_LITD_PASSWORD_HASH_PATH=/opt/bolthub/litd-password.hash
+    ExecStart=/opt/bolthub/finalize-daemon
+
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+      systemctl daemon-reload
+      systemctl enable bolthub-finalize.service
+      systemctl start bolthub-finalize.service || true
+    fi
+
+  # Create litd directory and compose file
+  - mkdir -p /opt/litd{{CADDY_BUILD_BLOCK}}
+  - |
+    cat > /opt/litd/docker-compose.yml << 'COMPOSE'
+    services:
+      lit:
+        image: {{LITD_IMAGE_REF}}
+        container_name: litd
+        restart: unless-stopped
+        ports:{{LITD_HOST_PORTS}}
+          - "9735:9735"
+        volumes:
+          - lit-data:/root/.lit
+          - lnd-data:/root/.lnd
+        command:
+          - '--uipassword={{LITD_PASSWORD_YAML}}'
+          - --httpslisten=0.0.0.0:8443
+          - --lnd.restlisten=0.0.0.0:8080
+          - --lnd-mode=integrated
+          - --lnd.bitcoin.active
+          - --lnd.bitcoin.mainnet
+          - --lnd.bitcoin.node=neutrino
+{{NEUTRINO_PEERS}}
+          - --lnd.protocol.option-scid-alias
+          - --lnd.protocol.zero-conf
+          - --lnd.feeurl=https://nodes.lightning.computer/fees/v1/btc-fee-estimates.json
+          - --lnd.debuglevel=info
+          - --lnd.listen=0.0.0.0:9735{{EXTERNAL_IP_LINE}}{{CADDY_SERVICE_BLOCK}}
+    volumes:
+      lit-data:
+      lnd-data:{{CADDY_VOLUMES_BLOCK}}
+    COMPOSE{{CADDYFILE_BLOCK}}
+
+  # Detect external IPv4 and inject into compose file (force -4 to avoid IPv6)
+  - |
+    EXTERNAL_IP=$(curl -4 -s --max-time 10 ifconfig.me 2>/dev/null || curl -4 -s --max-time 10 icanhazip.com 2>/dev/null || hostname -I | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+[.]/) {print $i; exit}}')
+    if [ -n "$EXTERNAL_IP" ]; then
+      sed -i "s/__EXTERNAL_IP__/$EXTERNAL_IP/g" /opt/litd/docker-compose.yml
+    else
+      sed -i '/__EXTERNAL_IP__/d' /opt/litd/docker-compose.yml
+    fi
+
+  # Render and validate final compose config for easier debugging
+  - cd /opt/litd && docker compose -f docker-compose.yml config > /var/log/litd-compose.rendered.yml
+  - cd /opt/litd && docker compose -f docker-compose.yml config --quiet
+
+  # Pull image and start
+  - |
+    cd /opt/litd
+    PULL_LOG=$(mktemp)
+    if ! docker compose pull >"$PULL_LOG" 2>&1; then
+      ERROR_EXCERPT=$(tail -n 40 "$PULL_LOG" | tr '\n' ' ' | cut -c1-1500)
+      cat "$PULL_LOG"
+      docker compose config || true
+      PAYLOAD=$(jq -n \
+        --arg nodeId "{{NODE_ID_JSON}}" \
+        --arg status "docker_pull_failed" \
+        --arg error "$ERROR_EXCERPT" \
+        '{nodeId: $nodeId, status: $status, error: $error}')
+      curl -sX POST "{{WEBHOOK_URL_SHELL}}" \
+        -H "Content-Type: application/json" \
+        -H "X-Webhook-Token: {{WEBHOOK_TOKEN_SHELL}}" \
+        -d "$PAYLOAD"
+      exit 1
+    fi
+    rm -f "$PULL_LOG"
+
+    # Verify pinned image digests against /opt/bolthub/image-digests.json before starting.
+    # Aborts deploy if any local image's digest does not match the signed manifest.
+    if ! /opt/bolthub/verify.sh; then
+      ERROR_EXCERPT="image digest verification failed"
+      docker compose config || true
+      PAYLOAD=$(jq -n \
+        --arg nodeId "{{NODE_ID_JSON}}" \
+        --arg status "digest_verify_failed" \
+        --arg error "$ERROR_EXCERPT" \
+        '{nodeId: $nodeId, status: $status, error: $error}')
+      curl -sX POST "{{WEBHOOK_URL_SHELL}}" \
+        -H "Content-Type: application/json" \
+        -H "X-Webhook-Token: {{WEBHOOK_TOKEN_SHELL}}" \
+        -d "$PAYLOAD"
+      exit 1
+    fi
+
+    UP_LOG=$(mktemp)
+    if ! docker compose up -d >"$UP_LOG" 2>&1; then
+      ERROR_EXCERPT=$(tail -n 40 "$UP_LOG" | tr '\n' ' ' | cut -c1-1500)
+      cat "$UP_LOG"
+      docker compose ps || true
+      docker compose logs --tail=200 lit || true
+      PAYLOAD=$(jq -n \
+        --arg nodeId "{{NODE_ID_JSON}}" \
+        --arg status "docker_up_failed" \
+        --arg error "$ERROR_EXCERPT" \
+        '{nodeId: $nodeId, status: $status, error: $error}')
+      curl -sX POST "{{WEBHOOK_URL_SHELL}}" \
+        -H "Content-Type: application/json" \
+        -H "X-Webhook-Token: {{WEBHOOK_TOKEN_SHELL}}" \
+        -d "$PAYLOAD"
+      exit 1
+    fi
+    rm -f "$UP_LOG"
+    docker compose ps
+    docker compose logs --tail=50 lit || true
+
+    echo "[bolthub] Container started, waiting for LND to initialize..."
+    EXTERNAL_IP=$(curl -4 -s --max-time 10 ifconfig.me 2>/dev/null || curl -4 -s --max-time 10 icanhazip.com 2>/dev/null || hostname -I | awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+[.]/) {print $i; exit}}')
+    echo "[bolthub] External IP: $EXTERNAL_IP"
+
+    LNCLI="docker exec litd lncli --rpcserver=localhost:8443 --tlscertpath=/root/.lit/tls.cert --no-macaroons"
+
+    sleep 15
+    for i in $(seq 1 90); do
+      STATE_JSON=$($LNCLI state 2>&1) || true
+      echo "[bolthub] State check #$i: $STATE_JSON"
+      if echo "$STATE_JSON" | grep -q '"NON_EXISTING"'; then
+        echo "[bolthub] LND ready for wallet creation"
+        break
+      fi
+      if echo "$STATE_JSON" | grep -q '"RPC_ACTIVE"'; then
+        echo "[bolthub] LND already active (wallet exists)"
+        break
+      fi
+      sleep 10
+    done
+
+    FINAL_STATE=$($LNCLI state 2>&1) || true
+    if echo "$FINAL_STATE" | grep -q '"RPC_ACTIVE"'; then
+      echo "[bolthub] LND active, auto-connecting to well-known peers..."
+      # Blocktank (Synonym LSP)
+      $LNCLI connect 0296b2db342fcf87ea94d981757fdf4d3e545bd5cef4919f58b5d38dfdd73bf5c9@146.148.127.140:9735 2>/dev/null || true
+      # ACINQ
+      $LNCLI connect 03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f@3.33.236.230:9735 2>/dev/null || true
+      # WalletOfSatoshi
+      $LNCLI connect 035e4ff418fc8b5554c5d9eea66396c227bd3a1a07c45e1e9a7f6c414b2e6b4b8e@170.75.163.209:9735 2>/dev/null || true
+      echo "[bolthub] Peer connections attempted"
+    fi
+    if echo "$FINAL_STATE" | grep -q '"NON_EXISTING"\|"RPC_ACTIVE"'; then
+      echo "[bolthub] LND initialized, sending ready webhook..."
+      PAYLOAD=$(jq -n \
+        --arg nodeId "{{NODE_ID_JSON}}" \
+        --arg ip "$EXTERNAL_IP" \
+        --arg status "ready" \
+        '{nodeId: $nodeId, ip: $ip, status: $status}')
+      WEBHOOK_RESP=$(curl -sX POST "{{WEBHOOK_URL_SHELL}}" \
+        -H "Content-Type: application/json" \
+        -H "X-Webhook-Token: {{WEBHOOK_TOKEN_SHELL}}" \
+        -d "$PAYLOAD" \
+        -w "\n%{http_code}" --max-time 15 2>&1)
+      echo "[bolthub] Webhook response: $WEBHOOK_RESP"
+    else
+      echo "[bolthub] LND did not initialize, sending timeout..."
+      PAYLOAD=$(jq -n \
+        --arg nodeId "{{NODE_ID_JSON}}" \
+        --arg ip "$EXTERNAL_IP" \
+        --arg status "timeout" \
+        --arg lastState "$FINAL_STATE" \
+        '{nodeId: $nodeId, ip: $ip, status: $status, lastState: $lastState}')
+      WEBHOOK_RESP=$(curl -sX POST "{{WEBHOOK_URL_SHELL}}" \
+        -H "Content-Type: application/json" \
+        -H "X-Webhook-Token: {{WEBHOOK_TOKEN_SHELL}}" \
+        -d "$PAYLOAD" \
+        -w "\n%{http_code}" --max-time 15 2>&1)
+      echo "[bolthub] Webhook response: $WEBHOOK_RESP"
+    fi

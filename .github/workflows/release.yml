@@ -1,0 +1,126 @@
+name: Release templates + daemon
+
+# Triggered by `templates/v1`, `templates/v2`, ... tags. Builds the
+# finalize-daemon binaries for every supported VM arch, generates the
+# SHA256SUMS file across templates AND binaries, signs it with cosign
+# (keyless OIDC), and attaches everything to a GitHub release. The
+# release URL is what cloud-init on every tenant VM downloads from at
+# provision time, so this workflow is on the critical path for every
+# new-node deploy.
+
+on:
+  push:
+    tags: ["templates/v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Template version directory (e.g. v1)"
+        required: true
+        default: "v1"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    name: Build daemon + sign templates/${{ inputs.version || 'v1' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: finalize-daemon/go.sum
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/templates/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/templates/}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build finalize-daemon (linux/amd64 + linux/arm64)
+        # Static, stripped, reproducible binaries. The binary names match
+        # the URL pattern hardcoded in
+        # packages/node-provisioner/src/cloud-init.ts in the main repo:
+        #   ${FINALIZE_DAEMON_URL_BASE}/bolthub-finalize-daemon-linux-${ARCH}
+        # so the release tag and binary names must stay in lockstep.
+        working-directory: finalize-daemon
+        run: |
+          mkdir -p ../release-artifacts
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w" \
+              -o ../release-artifacts/bolthub-finalize-daemon-linux-amd64 \
+              ./cmd/finalize-daemon
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w" \
+              -o ../release-artifacts/bolthub-finalize-daemon-linux-arm64 \
+              ./cmd/finalize-daemon
+
+      - name: Stage template artifacts
+        run: |
+          cp templates/${{ steps.ver.outputs.version }}/node.cloud-init.yaml.tmpl release-artifacts/
+          cp templates/${{ steps.ver.outputs.version }}/image-digests.json       release-artifacts/
+          cp templates/${{ steps.ver.outputs.version }}/verify.sh                release-artifacts/
+          cp templates/${{ steps.ver.outputs.version }}/CHANGELOG.md             release-artifacts/
+
+      - name: Generate SHA256SUMS across templates AND binaries
+        working-directory: release-artifacts
+        run: |
+          shasum -a 256 \
+            node.cloud-init.yaml.tmpl \
+            image-digests.json \
+            verify.sh \
+            CHANGELOG.md \
+            bolthub-finalize-daemon-linux-amd64 \
+            bolthub-finalize-daemon-linux-arm64 \
+            | sort -k2 > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Cosign keyless sign
+        # Keyless via Sigstore OIDC: no private key. The bundle includes
+        # the certificate proving the signing identity is this workflow
+        # in this repository, so on-VM verify.sh (or any third-party
+        # auditor) can `cosign verify-blob --certificate-identity-regexp
+        # 'https://github.com/signaltech-org/.*' \
+        # --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'`.
+        working-directory: release-artifacts
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob --yes \
+            --bundle SHA256SUMS.bundle \
+            --output-signature SHA256SUMS.sig \
+            SHA256SUMS
+
+      - name: Attach to GitHub release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/templates/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Templates ${{ steps.ver.outputs.version }}
+          files: |
+            release-artifacts/node.cloud-init.yaml.tmpl
+            release-artifacts/image-digests.json
+            release-artifacts/verify.sh
+            release-artifacts/CHANGELOG.md
+            release-artifacts/bolthub-finalize-daemon-linux-amd64
+            release-artifacts/bolthub-finalize-daemon-linux-arm64
+            release-artifacts/SHA256SUMS
+            release-artifacts/SHA256SUMS.sig
+            release-artifacts/SHA256SUMS.bundle
+            cosign.pub
+
+      - name: Upload artifacts (manual dispatch)
+        if: ${{ !startsWith(github.ref, 'refs/tags/templates/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: templates-${{ steps.ver.outputs.version }}-release
+          path: release-artifacts/

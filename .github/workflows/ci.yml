@@ -1,0 +1,82 @@
+name: CI
+
+# Runs on every push to main and every PR. Keeps the daemon honest
+# (build + vet + test + race) and runs `verify.sh` against the checked-in
+# image-digests.json under shellcheck so a typo doesn't slip into a
+# release. We deliberately do NOT pull docker images here — the digest
+# integrity check is exercised by on-VM verify.sh in the field, and
+# pulling many GB of LND/litd images on every PR is wasteful.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  daemon:
+    name: finalize-daemon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: finalize-daemon/go.sum
+
+      - name: go vet
+        working-directory: finalize-daemon
+        run: go vet ./...
+
+      - name: go test (race detector)
+        working-directory: finalize-daemon
+        run: go test -race ./...
+
+      - name: go build (verify cross-compile targets)
+        working-directory: finalize-daemon
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /tmp/x-amd64 ./cmd/finalize-daemon
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o /tmp/x-arm64 ./cmd/finalize-daemon
+
+  templates:
+    name: templates lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck verify.sh
+        run: |
+          for f in templates/*/verify.sh scripts/*.sh; do
+            echo "==> shellcheck $f"
+            shellcheck "$f"
+          done
+
+      - name: image-digests.json well-formed
+        run: |
+          for f in templates/*/image-digests.json; do
+            echo "==> jq . $f"
+            jq -e '.images | to_entries | length > 0' "$f" >/dev/null
+          done
+
+      - name: cloud-init template renders without unresolved placeholders
+        # Sanity check that every {{NAME}} slot present in the template is
+        # documented in the README, so a slot that's added without docs
+        # gets caught here.
+        run: |
+          declare -A documented
+          while IFS= read -r placeholder; do
+            documented["$placeholder"]=1
+          done < <(grep -oE '\{\{[A-Z0-9_]+\}\}' README.md | sort -u || true)
+          missing=0
+          while IFS= read -r placeholder; do
+            if [ -z "${documented[$placeholder]:-}" ]; then
+              echo "::warning::placeholder $placeholder is in the template but not documented in README.md"
+              missing=$((missing + 1))
+            fi
+          done < <(grep -oEh '\{\{[A-Z0-9_]+\}\}' templates/*/node.cloud-init.yaml.tmpl | sort -u)
+          if [ "$missing" -gt 0 ]; then
+            echo "::warning::$missing placeholder(s) not documented"
+          fi

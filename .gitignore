@@ -1,0 +1,27 @@
+# Build artifacts
+finalize-daemon/dist/
+release-artifacts/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go test coverage
+*.test
+*.out
+coverage.txt
+
+# Cosign keys (private; pub IS committed at repo root)
+cosign.key
+*.pem.key
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Local secrets
+.env
+.env.local
