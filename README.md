@@ -96,23 +96,57 @@ what was signed — do not deploy it.
 The cloud-init body never contains conditional logic. Every `{{NAME}}`
 slot is substituted as a pre-rendered string by BoltHub's caller, so the
 template body is byte-stable regardless of the operator's choices. The
-slots in `templates/v1/node.cloud-init.yaml.tmpl` are:
+exact slots in `templates/v1/node.cloud-init.yaml.tmpl` are listed below
+(grouped by purpose).
 
+### Identity and provenance
+| Slot                         | Purpose |
+| ---------------------------- | ------- |
+| `{{NODE_ID_RAW}}`            | the node's BoltHub UUID, raw value for shell vars |
+| `{{NODE_ID_JSON}}`           | same UUID, JSON-string-escaped for embedding in JSON files |
+| `{{TEMPLATE_VERSION}}`       | the version directory name (`v1`, `v2`, …) |
+| `{{TEMPLATE_SHA256}}`        | SHA-256 of THIS template body, baked into `/opt/bolthub/template-sha256` for on-VM cross-checking against the public release |
+
+### Webhook + finalize daemon
+| Slot                              | Purpose |
+| --------------------------------- | ------- |
+| `{{WEBHOOK_URL_SHELL}}`           | BoltHub's inbound webhook URL, shell-escaped |
+| `{{WEBHOOK_TOKEN_RAW}}`           | per-node HMAC secret shared with BoltHub, raw value |
+| `{{WEBHOOK_TOKEN_SHELL}}`         | same token, shell-escaped |
+| `{{FINALIZE_CALLBACK_URL}}`       | URL the on-VM finalize-daemon POSTs the baked macaroons to |
+| `{{FINALIZE_DAEMON_URL_BASE}}`    | release-asset base URL the daemon binary is downloaded from (defaults to this repo's matching release) |
+| `{{LITD_PASSWORD_HASH_BLOCK}}`    | optional `write_files` block that drops the browser-supplied Argon2id hash of the litd UI password under `/opt/bolthub/litd-password.hash` |
+
+### litd / LND configuration
+| Slot                         | Purpose |
+| ---------------------------- | ------- |
+| `{{LITD_IMAGE_REF}}`         | pinned `lightninglabs/lightning-terminal:vX.Y.Z@sha256:...` reference |
+| `{{LITD_HOST_PORTS}}`        | docker-compose port-mapping block for litd |
+| `{{LITD_PASSWORD_YAML}}`     | the litd UI password, YAML-escaped, for the litd config |
+| `{{NEUTRINO_PEERS}}`         | YAML list of neutrino peers (used when bitcoind is not running locally) |
+
+### Networking (Tor / Clearnet)
 | Slot                         | Purpose |
 | ---------------------------- | ------- |
 | `{{SSH_KEY_BLOCK}}`          | optional `ssh_authorized_keys` block (operator BYO key) |
-| `{{TOR_PACKAGES}}`           | extra apt packages when Tor mode is on |
+| `{{TOR_PACKAGES}}`           | extra apt packages when Tor mode is on (empty otherwise) |
+| `{{TOR_COMMANDS}}`           | extra runcmd lines that install/configure Tor (empty otherwise) |
 | `{{UFW_CADDY_PORTS}}`        | extra ufw rules opening Caddy 80/443 in clearnet mode |
-| `{{TOR_COMMANDS}}`           | extra runcmd lines that install/configure Tor |
-| `{{NODE_FQDN}}`              | the node's public clearnet FQDN, or `.onion` |
-| `{{LND_NETWORK}}`            | `mainnet` / `testnet` / `signet` |
-| `{{LITD_PASSWORD_HASH}}`     | argon2id hash of the litd UI password |
-| `{{LITD_PASSWORD_SALT}}`     | argon2id salt the daemon validates against |
-| `{{BOLTHUB_NODE_ID}}`        | the node's BoltHub UUID |
-| `{{BOLTHUB_API_BASE_URL}}`   | the BoltHub API origin the daemon phones home to |
-| `{{BOLTHUB_WEBHOOK_SECRET}}` | per-node HMAC secret shared with BoltHub |
-| `{{TEMPLATE_VERSION}}`       | the version directory name (`v1`, `v2`, …) |
-| `{{FINALIZE_DAEMON_URL_BASE}}` | release-asset base URL for the daemon binary |
+| `{{EXTERNAL_IP_LINE}}`       | LND `externalip=...` directive, or empty in Tor-only mode |
+
+### Caddy reverse proxy
+| Slot                         | Purpose |
+| ---------------------------- | ------- |
+| `{{CADDY_BUILD_BLOCK}}`      | docker-compose `build:` section for the Caddy image |
+| `{{CADDY_SERVICE_BLOCK}}`    | docker-compose `caddy:` service stanza |
+| `{{CADDY_VOLUMES_BLOCK}}`    | docker-compose volume declarations for Caddy state |
+| `{{CADDYFILE_BLOCK}}`        | the rendered Caddyfile body itself |
+
+### Verification
+| Slot                         | Purpose |
+| ---------------------------- | ------- |
+| `{{IMAGE_DIGESTS_JSON}}`     | the contents of `image-digests.json`, indented for embedding under `/opt/bolthub/image-digests.json` |
+| `{{VERIFY_SCRIPT}}`          | the contents of `verify.sh`, indented for embedding under `/opt/bolthub/verify.sh` |
 
 ## Adding a new template version
 
