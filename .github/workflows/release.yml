@@ -46,8 +46,11 @@ jobs:
           fi
 
       - name: Build finalize-daemon (linux/amd64 + linux/arm64)
-        # Static, stripped, reproducible binaries. The binary names match
-        # the URL pattern hardcoded in
+        # Static, stripped, reproducible binaries. Reproducibility matters
+        # because image-digests.json pins these binaries by sha256 — without
+        # -buildvcs=false, Go embeds the commit SHA into the binary so the
+        # bytes change on every commit even with identical source. The binary
+        # names match the URL pattern hardcoded in
         # packages/node-provisioner/src/cloud-init.ts in the main repo:
         #   ${FINALIZE_DAEMON_URL_BASE}/bolthub-finalize-daemon-linux-${ARCH}
         # so the release tag and binary names must stay in lockstep.
@@ -55,11 +58,11 @@ jobs:
         run: |
           mkdir -p ../release-artifacts
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w" \
+            go build -trimpath -buildvcs=false -ldflags="-s -w" \
               -o ../release-artifacts/bolthub-finalize-daemon-linux-amd64 \
               ./cmd/finalize-daemon
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w" \
+            go build -trimpath -buildvcs=false -ldflags="-s -w" \
               -o ../release-artifacts/bolthub-finalize-daemon-linux-arm64 \
               ./cmd/finalize-daemon
 
