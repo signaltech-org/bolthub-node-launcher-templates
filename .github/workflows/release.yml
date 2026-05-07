@@ -70,6 +70,31 @@ jobs:
           cp templates/${{ steps.ver.outputs.version }}/verify.sh                release-artifacts/
           cp templates/${{ steps.ver.outputs.version }}/CHANGELOG.md             release-artifacts/
 
+      - name: Verify daemon-binary digests in image-digests.json match the build
+        # If image-digests.json pins daemon-binary digests, they MUST match
+        # the freshly-built binaries — on-VM verify path will compare these
+        # values byte-for-byte. A mismatch means image-digests.json is stale
+        # against the source the workflow just built (Go toolchain drift,
+        # source change without manifest update, etc). Fail loudly here so
+        # we never publish a release whose pinned daemon digests don't match
+        # the binaries shipped alongside them.
+        working-directory: release-artifacts
+        run: |
+          for arch in amd64 arm64; do
+            key="bolthub-finalize-daemon-linux-${arch}"
+            expected=$(jq -r --arg k "$key" '.images[$k].digest // empty' image-digests.json | sed 's/^sha256://')
+            if [ -z "$expected" ]; then
+              echo "[release] $key: not pinned in image-digests.json — skipping match check"
+              continue
+            fi
+            actual=$(shasum -a 256 "$key" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::$key digest in image-digests.json (sha256:$expected) does not match the built binary (sha256:$actual). Update image-digests.json or rebuild with the original toolchain."
+              exit 1
+            fi
+            echo "[release] $key: ok (sha256:$actual)"
+          done
+
       - name: Generate SHA256SUMS across templates AND binaries
         working-directory: release-artifacts
         run: |
