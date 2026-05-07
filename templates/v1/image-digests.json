@@ -1,7 +1,7 @@
 {
   "version": "v1",
   "schemaVersion": 1,
-  "comment": "Multi-arch (OCI image index) digests pinned at template release time. Verified on the VM by verify.sh after every docker compose pull.",
+  "comment": "Pinned digests verified on the VM after provisioning. Entries with mediaType=application/vnd.oci.image.index.v1+json are checked by verify.sh against `docker image inspect` after `compose pull`. Entries with mediaType=application/octet-stream are release-asset binaries downloaded by cloud-init and checked via `sha256sum` against the digest below.",
   "images": {
     "lightninglabs/lightning-terminal:v0.16.1-alpha": {
       "digest": "sha256:7f8e16d940ee350ff38b2d8e71bda0c512a89822fa62a60097ac7ecc71d660ae",
@@ -29,6 +29,16 @@
         { "os": "linux", "architecture": "amd64", "digest": "sha256:6d125e80883be8a2bef5f088c7535945b42cdbb8a0f5471bf36eaf18dc0638f1" },
         { "os": "linux", "architecture": "arm64", "digest": "sha256:df9781ddd351c310248024d964065cd8d41b11fb5d238256d55d30925e8b6ae4" }
       ]
+    },
+    "bolthub-finalize-daemon-linux-amd64": {
+      "digest": "sha256:fb55d6ba9ba1dc14dea2fd1aa5bcd14763d326a6283c1f418191b9a6dc12c671",
+      "mediaType": "application/octet-stream",
+      "source": "https://github.com/signaltech-org/bolthub-node-launcher-templates/releases/download/templates/v1/bolthub-finalize-daemon-linux-amd64"
+    },
+    "bolthub-finalize-daemon-linux-arm64": {
+      "digest": "sha256:8c68e07623d41f64f38cd4ae299597486a4d5a82e9c0962622a3a0855f98e70f",
+      "mediaType": "application/octet-stream",
+      "source": "https://github.com/signaltech-org/bolthub-node-launcher-templates/releases/download/templates/v1/bolthub-finalize-daemon-linux-arm64"
     }
   }
 }
