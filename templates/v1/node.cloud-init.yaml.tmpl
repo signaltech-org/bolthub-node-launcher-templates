@@ -204,6 +204,20 @@ runcmd:
     fi
     rm -f "$PULL_LOG"
 
+    # `compose pull` only fetches services with an `image:` directive — Caddy
+    # is built locally via a Dockerfile, so its FROM bases (caddy:2,
+    # caddy:2-builder) aren't pulled yet. Pre-pull them by digest so verify.sh
+    # has something to inspect. Skipped for BYO/no-Caddy deploys where the
+    # Caddy block isn't rendered into the cloud-init.
+    if [ -f /opt/litd/caddy/Dockerfile ]; then
+      for ref in caddy:2 caddy:2-builder; do
+        digest=$(jq -r --arg key "$ref" '.images[$key].digest // empty' /opt/bolthub/image-digests.json)
+        if [ -n "$digest" ]; then
+          docker pull "${ref}@${digest}"
+        fi
+      done
+    fi
+
     # Verify pinned image digests against /opt/bolthub/image-digests.json before starting.
     # Aborts deploy if any local image's digest does not match the signed manifest.
     if ! /opt/bolthub/verify.sh; then

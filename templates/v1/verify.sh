@@ -75,6 +75,11 @@ fi
 echo "[bolthub-verify] using $DIGESTS_FILE"
 
 FAILED=0
+# Only verify entries flagged as multi-arch docker image indexes. The
+# manifest may also list non-image artefacts (e.g. release-asset binaries
+# with mediaType application/octet-stream); those have their own sha256
+# verification path in cloud-init and would otherwise fail here with
+# "no local digest" because `docker image inspect` doesn't know them.
 while IFS=$'\t' read -r ref expected; do
   if [ -z "$ref" ] || [ -z "$expected" ]; then
     continue
@@ -96,7 +101,12 @@ while IFS=$'\t' read -r ref expected; do
   else
     echo "[bolthub-verify] $ref: ok ($expected)"
   fi
-done < <(jq -r '.images | to_entries[] | "\(.key)\t\(.value.digest)"' "$DIGESTS_FILE")
+done < <(jq -r '
+  .images
+  | to_entries[]
+  | select(.value.mediaType == "application/vnd.oci.image.index.v1+json")
+  | "\(.key)\t\(.value.digest)"
+' "$DIGESTS_FILE")
 
 if [ "$FAILED" -ne 0 ]; then
   echo "[bolthub-verify] FAIL: one or more pinned digests do not match" >&2
