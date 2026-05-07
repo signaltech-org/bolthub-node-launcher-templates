@@ -85,21 +85,20 @@ while IFS=$'\t' read -r ref expected; do
     continue
   fi
 
-  actual=$(docker image inspect "$ref" --format '{{index .RepoDigests 0}}' 2>/dev/null | awk -F'@' '{print $2}')
-
-  if [ -z "$actual" ]; then
-    echo "[bolthub-verify] $ref: no local digest (not pulled?)" >&2
-    FAILED=1
-    continue
-  fi
-
-  if [ "$actual" != "$expected" ]; then
-    echo "[bolthub-verify] $ref: MISMATCH" >&2
-    echo "[bolthub-verify]   expected $expected" >&2
-    echo "[bolthub-verify]   actual   $actual" >&2
-    FAILED=1
-  else
+  # Look up the image by digest reference, not by name:tag. Docker does not
+  # preserve the tag when pulling `name:tag@sha256:<digest>` (only the digest
+  # survives in RepoDigests; RepoTags is empty). So `docker image inspect
+  # $ref` against the bare name:tag returns "No such image" and the previous
+  # tag-based comparison reported "no local digest" even though the correct
+  # image was in the store. Asking for the exact digest reference directly
+  # is both simpler and what we actually want — "is this exact pinned image
+  # present?"
+  if docker image inspect "${ref}@${expected}" >/dev/null 2>&1; then
     echo "[bolthub-verify] $ref: ok ($expected)"
+  else
+    echo "[bolthub-verify] $ref: NOT PRESENT with pinned digest $expected" >&2
+    echo "[bolthub-verify]   either the image was not pulled, or it was pulled with a different digest" >&2
+    FAILED=1
   fi
 done < <(jq -r '
   .images
