@@ -36,6 +36,19 @@ See [`image-digests.json`](./image-digests.json) for SHA-256 digests.
   don't match the freshly-built binaries, so a Go-toolchain drift or stale
   manifest can't ship to production silently.
 
+## Patch — verify.sh inspects images by digest, not by tag
+
+- `verify.sh` now does `docker image inspect ${ref}@${expected}` instead of
+  `docker image inspect ${ref}` against the bare `name:tag`. Docker does not
+  preserve the tag when pulling `name:tag@sha256:<digest>` — only the digest
+  survives in the local store, with `RepoTags` empty. So the previous
+  tag-based lookup returned "No such image" for every digest-pinned image
+  (the lit image pulled by `compose pull`, plus the Caddy bases pre-pulled
+  by an earlier patch), reporting them as "no local digest" and aborting
+  every Caddy-enabled deploy. Asking docker directly for the digest
+  reference is also simpler and answers the question we actually care
+  about — "is this exact pinned image present?"
+
 ## Notes
 
 - Cloud-init body is byte-stable for a given set of placeholder substitutions; BoltHub never
