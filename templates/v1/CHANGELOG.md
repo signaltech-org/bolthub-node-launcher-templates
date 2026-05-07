@@ -36,7 +36,20 @@ See [`image-digests.json`](./image-digests.json) for SHA-256 digests.
   don't match the freshly-built binaries, so a Go-toolchain drift or stale
   manifest can't ship to production silently.
 
-## Notes
+## Patch — UFW must allow docker bridge → host:7681
+
+- Cloud-init's UFW config opened only the externally-facing ports (22 /
+  8443 / 9735 + 443/80 with Caddy). Docker bypasses UFW only for
+  *published* ports (PREROUTING NAT installs DNAT rules); for a naked
+  host service like the finalize daemon, packets from the bridge hit
+  the INPUT chain where UFW's default-deny silently drops them. So
+  even with the daemon correctly bound to 0.0.0.0:7681, Caddy's
+  reverse_proxy `host.docker.internal:7681` got a TCP timeout (not a
+  TCP RST) and returned 502 to the browser.
+- Added `ufw allow in from 172.16.0.0/12 to any port 7681 proto tcp`
+  to the UFW block in cloud-init. 172.16.0.0/12 covers the default
+  docker bridge (172.17.0.0/16) plus all compose-created bridges; the
+  public NIC is on a different range so the daemon stays internal.
 
 - Cloud-init body is byte-stable for a given set of placeholder substitutions; BoltHub never
   modifies the template.

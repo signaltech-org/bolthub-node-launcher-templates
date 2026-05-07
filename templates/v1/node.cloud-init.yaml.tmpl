@@ -25,6 +25,15 @@ runcmd:
   - ufw allow 22/tcp
   - ufw allow 8443/tcp{{UFW_CADDY_PORTS}}
   - ufw allow 9735/tcp
+  # Allow docker bridge subnets to reach the on-VM finalize daemon at :7681.
+  # Docker bypasses UFW only for *published* ports (PREROUTING NAT); for a
+  # naked host service like the daemon, packets from the bridge hit the
+  # INPUT chain where UFW's default-deny drops them silently. Without this
+  # rule Caddy's reverse_proxy host.docker.internal:7681 times out and the
+  # browser POST to /.well-known/bolthub/v1/finalize returns 502.
+  # 172.16.0.0/12 covers the default docker bridge plus all compose-created
+  # bridges; the public NIC is on a different range so this stays internal.
+  - ufw allow in from 172.16.0.0/12 to any port 7681 proto tcp
   - ufw --force enable
 
   # Kernel hardening
