@@ -80,9 +80,13 @@ runcmd:
   # artifacts live in github.com/signaltech-org/bolthub-node-launcher-templates.
   # The daemon binary's SHA-256 is included in the cosign-signed
   # SHA256SUMS for this template version. The daemon listens on
-  # 127.0.0.1:7681 and is reverse-proxied by Caddy at
-  # /.well-known/bolthub/* so the user's browser can drive finalize
-  # directly without BoltHub's server having to SSH into the VM.
+  # 0.0.0.0:7681 and is reverse-proxied by Caddy at /.well-known/bolthub/*
+  # so the user's browser can drive finalize directly without BoltHub's
+  # server having to SSH into the VM. 0.0.0.0 (not 127.0.0.1) because
+  # Caddy is in a Docker container and reaches the host via the bridge
+  # gateway IP — a 127.0.0.1 bind on the host would be unreachable from
+  # the container. UFW default-deny + explicit allows keep 7681 off the
+  # public NIC.
   - |
     set -e
     ARCH="$(dpkg --print-architecture)"
@@ -122,7 +126,7 @@ runcmd:
     Environment=BOLTHUB_NODE_ID={{NODE_ID_RAW}}
     Environment=BOLTHUB_WEBHOOK_SECRET={{WEBHOOK_TOKEN_RAW}}
     Environment=BOLTHUB_CALLBACK_URL={{FINALIZE_CALLBACK_URL}}
-    Environment=BOLTHUB_LISTEN=127.0.0.1:7681
+    Environment=BOLTHUB_LISTEN=0.0.0.0:7681
     Environment=BOLTHUB_CONSUMED_TOKENS_PATH=/var/lib/bolthub/consumed-tokens.log
     Environment=BOLTHUB_LND_BASE_URL=https://127.0.0.1:8443
     Environment=BOLTHUB_LND_MACAROON_PATH=/var/lib/docker/volumes/litd_lit-data/_data/admin.macaroon

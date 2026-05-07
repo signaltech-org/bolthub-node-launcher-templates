@@ -36,7 +36,23 @@ See [`image-digests.json`](./image-digests.json) for SHA-256 digests.
   don't match the freshly-built binaries, so a Go-toolchain drift or stale
   manifest can't ship to production silently.
 
-## Notes
+## Patch — finalize-daemon must bind 0.0.0.0, not 127.0.0.1
+
+- Cloud-init's systemd unit set `BOLTHUB_LISTEN=127.0.0.1:7681`. Caddy
+  runs in a Docker container and reaches the host via
+  `extra_hosts: host.docker.internal:host-gateway` — that resolves to
+  the bridge gateway IP, NOT the host's loopback. A 127.0.0.1 bind on
+  the host is unreachable from the bridge, so Caddy's `reverse_proxy
+  host.docker.internal:7681` got connection-refused and returned 502
+  on every browser POST to `/.well-known/bolthub/v1/finalize` — every
+  Caddy-enabled deploy. Bind 0.0.0.0:7681 instead.
+- 7681 is not in the cloud-init's UFW allowlist (only 22 / 8443 /
+  9735 + 443/80 when Caddy is on), and `ufw default deny incoming` is
+  set, so 0.0.0.0:7681 is unreachable from the public NIC. Daemon is
+  now reachable from the bridge (Caddy) and unreachable externally —
+  which is what we wanted all along.
+- Daemon binary unchanged; this is purely an env var override change
+  in the systemd unit baked into cloud-init.
 
 - Cloud-init body is byte-stable for a given set of placeholder substitutions; BoltHub never
   modifies the template.
