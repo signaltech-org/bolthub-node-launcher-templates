@@ -31,12 +31,12 @@
       ]
     },
     "bolthub-finalize-daemon-linux-amd64": {
-      "digest": "sha256:8bac70a1008af1847a15bc6dcced023c3b89e40d3718ac48c15b6748f715da26",
+      "digest": "sha256:ea5a2c531b27ead7b4a4835365ae0417ae4b56054a307697bb2cf09a5a543b88",
       "mediaType": "application/octet-stream",
       "source": "https://github.com/signaltech-org/bolthub-node-launcher-templates/releases/download/templates/v1/bolthub-finalize-daemon-linux-amd64"
     },
     "bolthub-finalize-daemon-linux-arm64": {
-      "digest": "sha256:ac2d69a0c717439a3daf826932f289633980e94a4e04449cdfca976e333c66cb",
+      "digest": "sha256:858fd641b65517fcd9b0a6db1cbc08380503606c3df893269b4cf0f5456e4dcc",
       "mediaType": "application/octet-stream",
       "source": "https://github.com/signaltech-org/bolthub-node-launcher-templates/releases/download/templates/v1/bolthub-finalize-daemon-linux-arm64"
     }

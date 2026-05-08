@@ -86,6 +86,42 @@ This patch supersedes the earlier-open PRs #5, #6, #7, #8 — none of
 them were merged individually because they all needed to land
 together (and #5 had the wrong macaroon path, since corrected).
 
+## Patch — BakeMacaroon decodes hex correctly (was silently base64-mangling LND's response)
+
+LND's `BakeMacaroonResponse` proto declares the macaroon field as
+"hex encoded". The previous `internal/lnd.BakeMacaroon` attempted
+base64 decode first and only fell back on parse failure, but **hex
+strings are a subset of the base64 alphabet** (`[a-fA-F0-9]`), so
+base64 decode silently "succeeds" on a hex input and produces unrelated
+bytes. The downstream `hex.EncodeToString` then re-encoded those
+garbage bytes, and the macaroon BoltHub stored could never authenticate
+against LND — every subsequent `/v1/getinfo` call from BoltHub returned
+500 with `cannot determine data format of binary-encoded macaroon`.
+
+Net effect:
+- **monitoring macaroon** stored after finalize never worked → BoltHub's
+  health-check polling never succeeded → nodes stuck in `syncing`
+  state in the dashboard even after LND was fully synced.
+- **invoices macaroon** stored after finalize never worked → the
+  gateway would have failed to mint L402 invoices once the smoke test
+  reached billing flows.
+
+Fix: detect hex first by length parity + alphabet, fall back to base64
+for any non-LND gateway that genuinely returns base64, otherwise pass
+through unchanged.
+
+Daemon source change → binary rebuild required. Reproducibly built
+new digests pinned in `image-digests.json`:
+
+  amd64: 8bac70a1… → ea5a2c53…
+  arm64: ac2d69a0… → 858fd641…
+
+Note: existing nodes that were finalized before this patch have
+already-mangled macaroons stored in BoltHub's DB — they cannot be
+recovered from the bad bytes. Those nodes need to be re-finalized
+(or, for full recovery, re-deployed). New finalize calls after this
+patch will store correctly-encoded macaroons.
+
 ## Patch — verify.sh inspects images by digest, not by tag
 
 - `verify.sh` now does `docker image inspect ${ref}@${expected}` instead of

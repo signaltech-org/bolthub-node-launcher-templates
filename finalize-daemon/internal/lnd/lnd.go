@@ -133,14 +133,38 @@ func (c *Client) BakeMacaroon(ctx context.Context, perms []MacaroonPermission) (
 	if out.Macaroon == "" {
 		return "", errors.New("BakeMacaroon: empty macaroon in response")
 	}
-	// litd returns base64 here despite the field name; convert to hex like
-	// the bolthub TS expects so the wire format is identical to the SSH path.
-	macBytes, err := base64.StdEncoding.DecodeString(out.Macaroon)
-	if err != nil {
-		// Some versions return hex directly; pass through.
+	// LND's BakeMacaroonResponse proto declares the field as
+	// "hex encoded macaroon, serialized in binary format" — i.e. the REST
+	// gateway returns hex, not base64. The previous implementation
+	// attempted base64 decode first and only fell back on parse failure,
+	// but hex strings are a subset of the base64 alphabet (`[a-fA-F0-9]`),
+	// so base64 decode would silently "succeed" on a hex input and produce
+	// unrelated bytes. The downstream `hex.EncodeToString` then re-encoded
+	// those garbage bytes, and the macaroon BoltHub stored could never
+	// authenticate against LND ("cannot determine data format of
+	// binary-encoded macaroon" on every subsequent /v1/getinfo call).
+	//
+	// Detect hex first by length parity + alphabet, fall back to base64
+	// for older / non-LND gateways that genuinely return base64, and only
+	// pass through unchanged if both fail.
+	if isHexString(out.Macaroon) {
 		return out.Macaroon, nil
 	}
-	return hex.EncodeToString(macBytes), nil
+	if macBytes, err := base64.StdEncoding.DecodeString(out.Macaroon); err == nil {
+		return hex.EncodeToString(macBytes), nil
+	}
+	return out.Macaroon, nil
+}
+
+// isHexString reports whether s is a non-empty even-length string of hex
+// digits. A stricter test than `hex.DecodeString` because it rejects empty
+// strings and is cheap to compose with the base64-fallback path.
+func isHexString(s string) bool {
+	if len(s) == 0 || len(s)%2 != 0 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }
 
 type addSessionReq struct {
