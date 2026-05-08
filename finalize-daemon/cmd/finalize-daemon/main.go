@@ -43,7 +43,7 @@ func run() error {
 		return fmt.Errorf("tokens: %w", err)
 	}
 
-	lndClient, err := lnd.New(cfg.LndBaseURL, cfg.LndMacaroonPath)
+	lndClient, err := lnd.New(cfg.LndBaseURL, cfg.LndMacaroonPath, cfg.LitdMacaroonPath)
 	if err != nil {
 		return fmt.Errorf("lnd: %w", err)
 	}
@@ -88,18 +88,29 @@ type config struct {
 	Listen               string
 	LndBaseURL           string
 	LndMacaroonPath      string
+	LitdMacaroonPath     string
 	ConsumedTokensPath   string
 	LitdPasswordHashPath string
 }
 
 func loadConfig() (config, error) {
+	// Defaults reflect the standard layout under the docker compose
+	// volumes that ship with this template (`lnd-data` and `lit-data`
+	// mounted at `/root/.lnd` and `/root/.lit` respectively, with `litd`
+	// as the compose project name). Cloud-init sets explicit values to
+	// override these in production.
+	const (
+		defaultLndMacaroon  = "/var/lib/docker/volumes/litd_lnd-data/_data/data/chain/bitcoin/mainnet/admin.macaroon"
+		defaultLitdMacaroon = "/var/lib/docker/volumes/litd_lit-data/_data/mainnet/lit.macaroon"
+	)
 	c := config{
 		NodeID:               os.Getenv("BOLTHUB_NODE_ID"),
 		WebhookSecret:        os.Getenv("BOLTHUB_WEBHOOK_SECRET"),
 		CallbackURL:          os.Getenv("BOLTHUB_CALLBACK_URL"),
-		Listen:               envOr("BOLTHUB_LISTEN", "127.0.0.1:7681"),
-		LndBaseURL:           envOr("BOLTHUB_LND_BASE_URL", "https://127.0.0.1:8443"),
-		LndMacaroonPath:      envOr("BOLTHUB_LND_MACAROON_PATH", "/root/.lit/admin.macaroon"),
+		Listen:               envOr("BOLTHUB_LISTEN", "0.0.0.0:7681"),
+		LndBaseURL:           envOr("BOLTHUB_LND_BASE_URL", "https://127.0.0.1:8080"),
+		LndMacaroonPath:      envOr("BOLTHUB_LND_MACAROON_PATH", defaultLndMacaroon),
+		LitdMacaroonPath:     envOr("BOLTHUB_LITD_MACAROON_PATH", defaultLitdMacaroon),
 		ConsumedTokensPath:   envOr("BOLTHUB_CONSUMED_TOKENS_PATH", "/var/lib/bolthub/consumed-tokens.log"),
 		LitdPasswordHashPath: os.Getenv("BOLTHUB_LITD_PASSWORD_HASH_PATH"),
 	}

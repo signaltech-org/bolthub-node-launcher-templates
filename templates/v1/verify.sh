@@ -75,28 +75,37 @@ fi
 echo "[bolthub-verify] using $DIGESTS_FILE"
 
 FAILED=0
+# Only verify entries flagged as multi-arch docker image indexes. The
+# manifest may also list non-image artefacts (e.g. release-asset binaries
+# with mediaType application/octet-stream); those have their own sha256
+# verification path in cloud-init and would otherwise fail here with
+# "no local digest" because `docker image inspect` doesn't know them.
 while IFS=$'\t' read -r ref expected; do
   if [ -z "$ref" ] || [ -z "$expected" ]; then
     continue
   fi
 
-  actual=$(docker image inspect "$ref" --format '{{index .RepoDigests 0}}' 2>/dev/null | awk -F'@' '{print $2}')
-
-  if [ -z "$actual" ]; then
-    echo "[bolthub-verify] $ref: no local digest (not pulled?)" >&2
-    FAILED=1
-    continue
-  fi
-
-  if [ "$actual" != "$expected" ]; then
-    echo "[bolthub-verify] $ref: MISMATCH" >&2
-    echo "[bolthub-verify]   expected $expected" >&2
-    echo "[bolthub-verify]   actual   $actual" >&2
-    FAILED=1
-  else
+  # Look up the image by digest reference, not by name:tag. Docker does not
+  # preserve the tag when pulling `name:tag@sha256:<digest>` (only the digest
+  # survives in RepoDigests; RepoTags is empty). So `docker image inspect
+  # $ref` against the bare name:tag returns "No such image" and the previous
+  # tag-based comparison reported "no local digest" even though the correct
+  # image was in the store. Asking for the exact digest reference directly
+  # is both simpler and what we actually want — "is this exact pinned image
+  # present?"
+  if docker image inspect "${ref}@${expected}" >/dev/null 2>&1; then
     echo "[bolthub-verify] $ref: ok ($expected)"
+  else
+    echo "[bolthub-verify] $ref: NOT PRESENT with pinned digest $expected" >&2
+    echo "[bolthub-verify]   either the image was not pulled, or it was pulled with a different digest" >&2
+    FAILED=1
   fi
-done < <(jq -r '.images | to_entries[] | "\(.key)\t\(.value.digest)"' "$DIGESTS_FILE")
+done < <(jq -r '
+  .images
+  | to_entries[]
+  | select(.value.mediaType == "application/vnd.oci.image.index.v1+json")
+  | "\(.key)\t\(.value.digest)"
+' "$DIGESTS_FILE")
 
 if [ "$FAILED" -ne 0 ]; then
   echo "[bolthub-verify] FAIL: one or more pinned digests do not match" >&2

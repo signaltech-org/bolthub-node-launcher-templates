@@ -1,12 +1,20 @@
 // Package lnd is a tiny REST client to the local litd container that runs
 // alongside the finalize daemon. The daemon is the only process inside the
-// VM that holds the litd admin macaroon (read out of /root/.lit at startup
-// via a bind mount), so it is the single chokepoint for "bake another
-// scoped macaroon" and "create a new LNC pairing" RPCs.
+// VM that holds the wallet macaroons, so it is the single chokepoint for
+// "bake another scoped macaroon" and "create a new LNC pairing" RPCs.
 //
-// Everything in this package talks plain HTTPS to https://127.0.0.1:8443
-// and tolerates the litd self-signed cert; the surface area is intentionally
-// minimal so it can be audited end-to-end on the VM.
+// Everything in this package talks plain HTTPS to the LND REST gateway
+// (--lnd.restlisten, default https://127.0.0.1:8080) and tolerates litd's
+// self-signed cert. The surface area is intentionally minimal so it can be
+// audited end-to-end on the VM.
+//
+// Two macaroons are required because litd's REST gateway delegates
+// authentication per subserver: LND endpoints (e.g. /v1/macaroon for
+// BakeMacaroon) are validated by LND's macaroon root key, but
+// litd-specific endpoints (e.g. /v1/sessions for CreateLNCSession) are
+// validated by litd's separate root key. A single macaroon cannot pass
+// both validators, so the Client carries both and sends the appropriate
+// one per call.
 package lnd
 
 import (
@@ -29,23 +37,43 @@ import (
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
-	macaroon   string
+	// lndMacaroon is sent with calls to LND-native REST endpoints (e.g.
+	// /v1/macaroon for BakeMacaroon, /v1/channels/backup/restore for
+	// RestoreChannelBackups). Validated against LND's root key.
+	lndMacaroon string
+	// litdMacaroon is sent with calls to litd-specific REST endpoints
+	// (e.g. /v1/sessions for CreateLNCSession). Validated against litd's
+	// separate root key.
+	litdMacaroon string
 }
 
-// New constructs a Client for the local litd, loading the admin macaroon
-// from path. macaroonPath is /root/.lit/admin.macaroon by default.
-func New(baseURL string, macaroonPath string) (*Client, error) {
-	mac, err := os.ReadFile(macaroonPath)
+// New constructs a Client for the local litd. Loads two macaroons from
+// disk: an LND admin macaroon (used for LND-native REST calls) and a
+// litd super-macaroon (used for litd-specific REST calls). See the
+// package comment for why both are required.
+//
+// In integrated mode the standard locations on the host (with the litd
+// docker compose volume names this template uses) are:
+//
+//	/var/lib/docker/volumes/litd_lnd-data/_data/data/chain/bitcoin/<network>/admin.macaroon
+//	/var/lib/docker/volumes/litd_lit-data/_data/<network>/lit.macaroon
+func New(baseURL, lndMacaroonPath, litdMacaroonPath string) (*Client, error) {
+	lndMac, err := os.ReadFile(lndMacaroonPath)
 	if err != nil {
-		return nil, fmt.Errorf("lnd.New: read macaroon: %w", err)
+		return nil, fmt.Errorf("lnd.New: read LND macaroon at %s: %w", lndMacaroonPath, err)
+	}
+	litdMac, err := os.ReadFile(litdMacaroonPath)
+	if err != nil {
+		return nil, fmt.Errorf("lnd.New: read litd macaroon at %s: %w", litdMacaroonPath, err)
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: tr},
-		macaroon:   hex.EncodeToString(mac),
+		BaseURL:      strings.TrimRight(baseURL, "/"),
+		HTTPClient:   &http.Client{Timeout: 30 * time.Second, Transport: tr},
+		lndMacaroon:  hex.EncodeToString(lndMac),
+		litdMacaroon: hex.EncodeToString(litdMac),
 	}, nil
 }
 
@@ -86,7 +114,7 @@ type bakeResp struct {
 func (c *Client) BakeMacaroon(ctx context.Context, perms []MacaroonPermission) (string, error) {
 	body, _ := json.Marshal(bakeReq{Permissions: perms})
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/macaroon", bytes.NewReader(body))
-	req.Header.Set("Grpc-Metadata-macaroon", c.macaroon)
+	req.Header.Set("Grpc-Metadata-macaroon", c.lndMacaroon)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HTTPClient.Do(req)
@@ -152,7 +180,7 @@ type restoreReq struct {
 func (c *Client) RestoreChannelBackups(ctx context.Context, multiBlobBase64 string) error {
 	body, _ := json.Marshal(restoreReq{MultiChanBackup: multiBlobBase64})
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/channels/backup/restore", bytes.NewReader(body))
-	req.Header.Set("Grpc-Metadata-macaroon", c.macaroon)
+	req.Header.Set("Grpc-Metadata-macaroon", c.lndMacaroon)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
@@ -180,7 +208,9 @@ func (c *Client) CreateLNCSession(ctx context.Context, expiry time.Time) (string
 	}
 	body, _ := json.Marshal(req)
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/sessions", bytes.NewReader(body))
-	httpReq.Header.Set("Grpc-Metadata-macaroon", c.macaroon)
+	// /v1/sessions is a litd subserver endpoint; LND's root key won't
+	// validate against it. Use the litd super-macaroon here.
+	httpReq.Header.Set("Grpc-Metadata-macaroon", c.litdMacaroon)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.HTTPClient.Do(httpReq)

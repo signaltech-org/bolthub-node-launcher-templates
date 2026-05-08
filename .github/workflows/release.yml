@@ -46,8 +46,11 @@ jobs:
           fi
 
       - name: Build finalize-daemon (linux/amd64 + linux/arm64)
-        # Static, stripped, reproducible binaries. The binary names match
-        # the URL pattern hardcoded in
+        # Static, stripped, reproducible binaries. Reproducibility matters
+        # because image-digests.json pins these binaries by sha256 — without
+        # -buildvcs=false, Go embeds the commit SHA into the binary so the
+        # bytes change on every commit even with identical source. The binary
+        # names match the URL pattern hardcoded in
         # packages/node-provisioner/src/cloud-init.ts in the main repo:
         #   ${FINALIZE_DAEMON_URL_BASE}/bolthub-finalize-daemon-linux-${ARCH}
         # so the release tag and binary names must stay in lockstep.
@@ -55,11 +58,11 @@ jobs:
         run: |
           mkdir -p ../release-artifacts
           GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w" \
+            go build -trimpath -buildvcs=false -ldflags="-s -w" \
               -o ../release-artifacts/bolthub-finalize-daemon-linux-amd64 \
               ./cmd/finalize-daemon
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w" \
+            go build -trimpath -buildvcs=false -ldflags="-s -w" \
               -o ../release-artifacts/bolthub-finalize-daemon-linux-arm64 \
               ./cmd/finalize-daemon
 
@@ -69,6 +72,31 @@ jobs:
           cp templates/${{ steps.ver.outputs.version }}/image-digests.json       release-artifacts/
           cp templates/${{ steps.ver.outputs.version }}/verify.sh                release-artifacts/
           cp templates/${{ steps.ver.outputs.version }}/CHANGELOG.md             release-artifacts/
+
+      - name: Verify daemon-binary digests in image-digests.json match the build
+        # If image-digests.json pins daemon-binary digests, they MUST match
+        # the freshly-built binaries — on-VM verify path will compare these
+        # values byte-for-byte. A mismatch means image-digests.json is stale
+        # against the source the workflow just built (Go toolchain drift,
+        # source change without manifest update, etc). Fail loudly here so
+        # we never publish a release whose pinned daemon digests don't match
+        # the binaries shipped alongside them.
+        working-directory: release-artifacts
+        run: |
+          for arch in amd64 arm64; do
+            key="bolthub-finalize-daemon-linux-${arch}"
+            expected=$(jq -r --arg k "$key" '.images[$k].digest // empty' image-digests.json | sed 's/^sha256://')
+            if [ -z "$expected" ]; then
+              echo "[release] $key: not pinned in image-digests.json — skipping match check"
+              continue
+            fi
+            actual=$(shasum -a 256 "$key" | awk '{print $1}')
+            if [ "$expected" != "$actual" ]; then
+              echo "::error::$key digest in image-digests.json (sha256:$expected) does not match the built binary (sha256:$actual). Update image-digests.json or rebuild with the original toolchain."
+              exit 1
+            fi
+            echo "[release] $key: ok (sha256:$actual)"
+          done
 
       - name: Generate SHA256SUMS across templates AND binaries
         working-directory: release-artifacts

@@ -17,7 +17,18 @@ FILE="$1"
 TMP=$(mktemp)
 cp "$FILE" "$TMP"
 
-mapfile -t IMAGES < <(jq -r '.images | keys[]' "$FILE")
+# Only refresh entries that are actually Docker Hub image indexes. Non-image
+# entries (e.g. release-asset binaries with mediaType=application/octet-stream)
+# don't have Docker Hub manifests; their digests are produced by the release
+# workflow when the corresponding artifact is built.
+mapfile -t IMAGES < <(
+  jq -r '
+    .images
+    | to_entries[]
+    | select(.value.mediaType == "application/vnd.oci.image.index.v1+json")
+    | .key
+  ' "$FILE"
+)
 
 for ref in "${IMAGES[@]}"; do
   # Split into name + tag (assume single ':' on tag)
