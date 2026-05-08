@@ -25,6 +25,15 @@ runcmd:
   - ufw allow 22/tcp
   - ufw allow 8443/tcp{{UFW_CADDY_PORTS}}
   - ufw allow 9735/tcp
+  # Allow docker bridge subnets to reach the on-VM finalize daemon at :7681.
+  # Docker bypasses UFW only for *published* ports (PREROUTING NAT); for a
+  # naked host service like the daemon, packets from the bridge hit the
+  # INPUT chain where UFW's default-deny silently drops them. Without this
+  # rule Caddy's reverse_proxy host.docker.internal:7681 times out and the
+  # browser POST to /.well-known/bolthub/v1/finalize returns 502.
+  # 172.16.0.0/12 covers the default docker bridge plus all compose-created
+  # bridges; the public NIC is on a different range so this stays internal.
+  - ufw allow in from 172.16.0.0/12 to any port 7681 proto tcp
   - ufw --force enable
 
   # Kernel hardening
@@ -80,9 +89,13 @@ runcmd:
   # artifacts live in github.com/signaltech-org/bolthub-node-launcher-templates.
   # The daemon binary's SHA-256 is included in the cosign-signed
   # SHA256SUMS for this template version. The daemon listens on
-  # 127.0.0.1:7681 and is reverse-proxied by Caddy at
-  # /.well-known/bolthub/* so the user's browser can drive finalize
-  # directly without BoltHub's server having to SSH into the VM.
+  # 0.0.0.0:7681 and is reverse-proxied by Caddy at /.well-known/bolthub/*
+  # so the user's browser can drive finalize directly without BoltHub's
+  # server having to SSH into the VM. 0.0.0.0 (not 127.0.0.1) because
+  # Caddy is in a Docker container and reaches the host via the bridge
+  # gateway IP — a 127.0.0.1 bind on the host would be unreachable from
+  # the container. UFW default-deny + the explicit bridge-only allow
+  # for :7681 above keeps it off the public NIC.
   - |
     set -e
     ARCH="$(dpkg --print-architecture)"
@@ -122,10 +135,11 @@ runcmd:
     Environment=BOLTHUB_NODE_ID={{NODE_ID_RAW}}
     Environment=BOLTHUB_WEBHOOK_SECRET={{WEBHOOK_TOKEN_RAW}}
     Environment=BOLTHUB_CALLBACK_URL={{FINALIZE_CALLBACK_URL}}
-    Environment=BOLTHUB_LISTEN=127.0.0.1:7681
+    Environment=BOLTHUB_LISTEN=0.0.0.0:7681
     Environment=BOLTHUB_CONSUMED_TOKENS_PATH=/var/lib/bolthub/consumed-tokens.log
-    Environment=BOLTHUB_LND_BASE_URL=https://127.0.0.1:8443
-    Environment=BOLTHUB_LND_MACAROON_PATH=/var/lib/docker/volumes/litd_lit-data/_data/admin.macaroon
+    Environment=BOLTHUB_LND_BASE_URL=https://127.0.0.1:8080
+    Environment=BOLTHUB_LND_MACAROON_PATH=/var/lib/docker/volumes/litd_lnd-data/_data/data/chain/bitcoin/mainnet/admin.macaroon
+    Environment=BOLTHUB_LITD_MACAROON_PATH=/var/lib/docker/volumes/litd_lit-data/_data/mainnet/lit.macaroon
     Environment=BOLTHUB_LITD_PASSWORD_HASH_PATH=/opt/bolthub/litd-password.hash
     ExecStart=/opt/bolthub/finalize-daemon
 
