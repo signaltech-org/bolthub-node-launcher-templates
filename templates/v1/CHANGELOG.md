@@ -36,6 +36,31 @@ See [`image-digests.json`](./image-digests.json) for SHA-256 digests.
   don't match the freshly-built binaries, so a Go-toolchain drift or stale
   manifest can't ship to production silently.
 
+## Patch — point daemon at LND REST gateway (8080), not litd HTTPS UI (8443)
+
+- Cloud-init's systemd unit set `BOLTHUB_LND_BASE_URL=https://127.0.0.1:8443`,
+  the litd HTTPS listener. That listener serves the React UI as the
+  catch-all and does NOT proxy the REST routes the daemon needs:
+
+  - POST /v1/macaroon  → 200 text/html (UI fallback)
+  - POST /v1/sessions  → 200 text/html (UI fallback)
+
+- The actual REST gateway is `--lnd.restlisten=0.0.0.0:8080` inside the
+  litd container. Both LND-native endpoints (BakeMacaroon) AND
+  litd-specific endpoints (CreateLNCSession) are served there in
+  integrated mode. Verified by curling each port against a fresh litd
+  v0.16.1-alpha; 8080 returned application/json, 8443 returned
+  text/html for the same paths.
+- Net effect: the daemon's `BakeMacaroon` was parsing an HTML body as
+  JSON and returning `bad response: invalid character '<' looking for
+  beginning of value`, which the handler turned into an opaque 502
+  "lnd: bake monitoring failed" toast in the dashboard.
+- The host-side port publishing for 8080 is a consumer-renderer
+  concern (template just has `{{LITD_HOST_PORTS}}` placeholder).
+  Consumers should publish `127.0.0.1:8080:8080` on host loopback so
+  the daemon (host systemd service) can reach the REST gateway without
+  exposing it externally.
+
 ## Patch — verify.sh inspects images by digest, not by tag
 
 - `verify.sh` now does `docker image inspect ${ref}@${expected}` instead of
