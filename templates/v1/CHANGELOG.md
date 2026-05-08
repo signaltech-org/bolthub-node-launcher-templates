@@ -39,23 +39,27 @@ See [`image-digests.json`](./image-digests.json) for SHA-256 digests.
 ## Patch — finalize-daemon macaroon path
 
 - Cloud-init's systemd unit pointed `BOLTHUB_LND_MACAROON_PATH` at
-  `/var/lib/docker/volumes/litd_lit-data/_data/admin.macaroon`. Litd
-  v0.16.x actually writes its macaroon to `<lit-dir>/<network>/lit.macaroon`
-  (per litd's `DefaultMacaroonFilename = "lit.macaroon"` and
-  `DefaultMacaroonPath = filepath.Join(DefaultLitDir, DefaultNetwork, ...)`),
-  which on the host via the `lit-data` volume is
-  `/var/lib/docker/volumes/litd_lit-data/_data/mainnet/lit.macaroon`. Two
-  errors in one path: wrong filename, and missing the `mainnet/` segment.
-- Net effect: the daemon's startup `os.ReadFile()` returned ENOENT,
-  `log.Fatalf` fired, systemd restarted every 5s under
-  `Restart=on-failure / RestartSec=5`, the daemon was never running when
-  the user clicked "I have created my wallet", and Caddy returned 502 on
-  every browser POST to `/.well-known/bolthub/v1/finalize`. Bug had been
-  present since the daemon was added; only surfaced when a real prod
-  deploy got far enough through the flow to invoke finalize.
-- The daemon binary is unchanged — only the env var injected by cloud-init
-  changed, so this patch does not require a daemon-source rebuild and the
-  pinned binary digests in `image-digests.json` stay valid.
+  `/var/lib/docker/volumes/litd_lit-data/_data/admin.macaroon`. That file
+  doesn't exist — litd doesn't write `admin.macaroon` to lit-data and
+  the daemon connects to LND's REST gateway (`--lnd.restlisten=0.0.0.0:8080`),
+  not litd's HTTPS listener, so it needs an LND-validated macaroon
+  rather than litd's super-macaroon. The correct path is LND's
+  default admin macaroon location, which inside the `lnd-data` volume
+  on the host resolves to:
+  `/var/lib/docker/volumes/litd_lnd-data/_data/data/chain/bitcoin/mainnet/admin.macaroon`
+- Net effect of the original bug: daemon's startup `os.ReadFile()`
+  returned ENOENT, `log.Fatalf` fired, systemd restarted every 5s under
+  `Restart=on-failure / RestartSec=5`, the daemon was never running
+  when the user clicked "I have created my wallet", and Caddy returned
+  502 on every browser POST to `/.well-known/bolthub/v1/finalize`.
+- LND's REST gateway in integrated mode sits behind LND's macaroon
+  middleware, so the LND admin macaroon validates fine for both LND
+  endpoints (BakeMacaroon at `/v1/macaroon`) and litd-specific
+  endpoints (CreateLNCSession at `/v1/sessions`). One macaroon for
+  both calls.
+- The daemon binary is unchanged — only the env var injected by
+  cloud-init changed, so the pinned digests in `image-digests.json`
+  stay valid.
 
 - Cloud-init body is byte-stable for a given set of placeholder substitutions; BoltHub never
   modifies the template.

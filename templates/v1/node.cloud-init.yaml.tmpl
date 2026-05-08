@@ -125,7 +125,7 @@ runcmd:
     Environment=BOLTHUB_LISTEN=127.0.0.1:7681
     Environment=BOLTHUB_CONSUMED_TOKENS_PATH=/var/lib/bolthub/consumed-tokens.log
     Environment=BOLTHUB_LND_BASE_URL=https://127.0.0.1:8443
-    Environment=BOLTHUB_LND_MACAROON_PATH=/var/lib/docker/volumes/litd_lit-data/_data/mainnet/lit.macaroon
+    Environment=BOLTHUB_LND_MACAROON_PATH=/var/lib/docker/volumes/litd_lnd-data/_data/data/chain/bitcoin/mainnet/admin.macaroon
     Environment=BOLTHUB_LITD_PASSWORD_HASH_PATH=/opt/bolthub/litd-password.hash
     ExecStart=/opt/bolthub/finalize-daemon
 
