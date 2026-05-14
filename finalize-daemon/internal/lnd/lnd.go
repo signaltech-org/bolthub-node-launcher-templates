@@ -101,6 +101,43 @@ var InvoicesPermissions = []MacaroonPermission{
 	{Entity: "invoices", Action: "write"},
 }
 
+// LncBrowserPermissions is the minimal LND permission set the bolthub
+// dashboard needs over the user's browser-held LNC session. Used as
+// `macaroon_custom_permissions` when minting the bolthub-finalize
+// session via litd's /v1/sessions.
+//
+// Included (what the dashboard actually does):
+//   - info:read     — getInfo (verify pairing, alias / pubkey display)
+//   - address:write — newAddress for on-chain deposit
+//   - peers:read    — listPeers confirms LSP peer connect succeeded
+//   - peers:write   — connectPeer to the LSP before channel open
+//   - offchain:read — exportAllChannelBackups for SCB autobackup
+//   - onchain:read  — view-only on-chain state (used by future
+//                     surfaces; harmless to grant)
+//
+// Deliberately NOT included:
+//   - onchain:write  — would let the browser send the user's on-chain
+//                      balance to an arbitrary address. The dashboard
+//                      never needs this.
+//   - offchain:write — pay invoices / force-close channels. Same
+//                      reasoning.
+//   - macaroon:*     — re-baking new macaroons could escalate scope.
+//   - signer:*       — signing arbitrary messages is a step toward
+//                      spending in several LND code paths.
+//
+// Users who want full-admin access (e.g. import the pairing into Zeus
+// mobile as their primary wallet UI) should mint a separate
+// TYPE_MACAROON_ADMIN session from the LIT Web UI themselves. The
+// bolthub-finalize session is for the dashboard only.
+var LncBrowserPermissions = []MacaroonPermission{
+	{Entity: "info", Action: "read"},
+	{Entity: "address", Action: "write"},
+	{Entity: "peers", Action: "read"},
+	{Entity: "peers", Action: "write"},
+	{Entity: "offchain", Action: "read"},
+	{Entity: "onchain", Action: "read"},
+}
+
 type bakeReq struct {
 	Permissions []MacaroonPermission `json:"permissions"`
 }
@@ -218,17 +255,25 @@ func (c *Client) RestoreChannelBackups(ctx context.Context, multiBlobBase64 stri
 	return nil
 }
 
-// CreateLNCSession asks litd to mint an admin LNC pairing the user can
-// import into Zeus / Lightning Terminal directly. The pairing phrase is
-// returned to the daemon's caller (the browser) and is never echoed home
-// to bolthub.
+// CreateLNCSession asks litd to mint a custom-scoped LNC pairing for
+// the bolthub dashboard's exclusive use. Scope is constrained via
+// `LncBrowserPermissions` — see its doc comment for the rationale.
+// The pairing phrase is returned to the daemon's caller (the browser)
+// and is never echoed home to bolthub.
+//
+// Users who need full admin access (Zeus as primary wallet UI etc)
+// should mint their own TYPE_MACAROON_ADMIN session from the LIT Web
+// UI on port 8443. The pairing handed back here is intentionally not
+// admin-scoped so that a compromised browser localStorage cannot
+// drain on-chain or force-close channels.
 func (c *Client) CreateLNCSession(ctx context.Context, expiry time.Time) (string, error) {
 	req := addSessionReq{
-		Label:                  "bolthub-finalize",
-		SessionType:            "TYPE_MACAROON_ADMIN",
-		ExpiryTimestampSeconds: fmt.Sprintf("%d", expiry.Unix()),
-		MailboxServerAddr:      "mailbox.terminal.lightning.today:443",
-		DevServer:              false,
+		Label:                     "bolthub-finalize",
+		SessionType:               "TYPE_MACAROON_CUSTOM",
+		ExpiryTimestampSeconds:    fmt.Sprintf("%d", expiry.Unix()),
+		MailboxServerAddr:         "mailbox.terminal.lightning.today:443",
+		DevServer:                 false,
+		MacaroonCustomPermissions: LncBrowserPermissions,
 	}
 	body, _ := json.Marshal(req)
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/v1/sessions", bytes.NewReader(body))

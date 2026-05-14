@@ -135,6 +135,38 @@ patch will store correctly-encoded macaroons.
   reference is also simpler and answers the question we actually care
   about — "is this exact pinned image present?"
 
+## Patch — bolthub-finalize LNC session scoped to TYPE_MACAROON_CUSTOM
+
+The on-VM daemon previously asked litd for `TYPE_MACAROON_ADMIN` when
+minting the `bolthub-finalize` LNC pairing. Admin includes
+`onchain:write` (arbitrary `SendCoins`) and `offchain:write` (pay
+invoices, force-close channels) — a compromise of the user's browser
+`localStorage` (XSS, malicious extension) could drain the node's
+on-chain balance or force-close every channel to an attacker-controlled
+peer.
+
+This patch narrows the session to `TYPE_MACAROON_CUSTOM` with exactly
+the permissions the bolthub dashboard actually uses:
+
+- `info:read`     — getInfo (verify pairing, alias / pubkey)
+- `address:write` — newAddress for on-chain deposit
+- `peers:read`    — listPeers (confirm LSP peer connect)
+- `peers:write`   — connectPeer to the LSP before channel open
+- `offchain:read` — exportAllChannelBackups for SCB autobackup
+- `onchain:read`  — view-only on-chain state (future surfaces)
+
+A compromised browser can still cause minor mischief (open peer
+connections, generate deposit addresses) but cannot move funds. Users
+who want full admin access (e.g. Zeus mobile as their primary wallet
+UI) mint their own admin session via the LIT Web UI on port 8443 —
+that channel is unchanged.
+
+Daemon source change → binary rebuild required. Reproducibly built
+new digests pinned in `image-digests.json`:
+
+  amd64: 1d4fdcd8… → b9d5a917…
+  arm64: 4160420a… → 002582c5…
+
 ## Notes
 
 - Cloud-init body is byte-stable for a given set of placeholder substitutions; BoltHub never
